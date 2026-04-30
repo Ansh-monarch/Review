@@ -4,7 +4,6 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
   <title>Chess Game Review</title>
-  <!-- Chessboard.js CSS -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css">
   <style>
     body {
@@ -141,6 +140,13 @@
     .highlight-square {
       box-shadow: inset 0 0 0 3px rgba(255, 215, 0, 0.8);
     }
+    .error-message {
+      color: #e74c3c;
+      padding: 10px;
+      background: #fdf0f0;
+      border-radius: 5px;
+      margin: 10px 0;
+    }
     @media (max-width: 600px) {
       .board-container {
         flex-direction: column;
@@ -161,6 +167,7 @@
     <textarea id="pgnInput" placeholder="Paste your PGN here..."></textarea>
     <button id="analyzeBtn">🔍 Analyze Game</button>
     <span id="progress" class="loading"></span>
+    <div id="errorDisplay" class="error-message" style="display:none;"></div>
   </div>
 
   <div class="analysis-section" id="analysisSection" style="display: none;">
@@ -184,21 +191,84 @@
     </div>
   </div>
 
-  <!-- Dependencies -->
   <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js"></script>
+  <!-- Use chess.js from jsdelivr which is more reliable -->
+  <script src="https://cdn.jsdelivr.net/npm/chess.js@0.10.3/dist/chess.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js"></script>
 
   <script>
     (function() {
+      // ---------- PGN Parser ----------
+      function parsePGN(pgnText) {
+        // Normalize quotes and line endings
+        let cleaned = pgnText
+          .replace(/[\u2018\u2019\u201C\u201D]/g, '"') // Smart quotes to straight quotes
+          .replace(/[\u2013\u2014]/g, '-') // Em/en dashes
+          .replace(/\r\n/g, '\n')
+          .replace(/\r/g, '\n')
+          .trim();
+        
+        // Extract just the moves (skip headers)
+        let movesText = cleaned;
+        
+        // If there are headers, extract moves after the headers
+        if (cleaned.includes('[') && cleaned.includes(']')) {
+          const parts = cleaned.split('\n');
+          let moveLines = [];
+          let headersDone = false;
+          
+          for (let line of parts) {
+            if (!headersDone && (line.trim().startsWith('[') || line.trim() === '')) {
+              continue;
+            }
+            headersDone = true;
+            if (line.trim()) {
+              moveLines.push(line.trim());
+            }
+          }
+          movesText = moveLines.join(' ');
+        }
+        
+        // Clean up the moves text
+        movesText = movesText
+          .replace(/\{[\s\S]*?\}/g, '')  // Remove comments
+          .replace(/\([\s\S]*?\)/g, '')  // Remove variations
+          .replace(/\$\d+/g, '')         // Remove NAGs
+          .replace(/\d+\.\.\./g, '')     // Remove black move indicators
+          .replace(/\s+/g, ' ')          // Normalize spaces
+          .trim();
+        
+        console.log('Cleaned moves:', movesText);
+        
+        // Parse move by move
+        const chess = new Chess();
+        const tokens = movesText.split(/\s+/);
+        
+        for (let token of tokens) {
+          // Skip move numbers and result
+          if (/^\d+\.$/.test(token) || /^(1-0|0-1|1\/2-1\/2|\*)$/.test(token)) {
+            continue;
+          }
+          
+          try {
+            chess.move(token, { sloppy: true });
+          } catch (e) {
+            console.warn('Failed to parse move:', token, e.message);
+            // Continue trying other moves
+          }
+        }
+        
+        return chess;
+      }
+
       // ---------- Engine wrapper ----------
       class Engine {
         constructor(workerUrl) {
           this.worker = new Worker(workerUrl);
           this.worker.onmessage = this._handleMessage.bind(this);
           this._pendingResolve = null;
-          this._pendingType = null;      // 'bestmove' or 'readyok' or 'uciok'
-          this._score = null;            // { cp: number } or { mate: number }
+          this._pendingType = null;
+          this._score = null;
           this._bestmove = null;
           this._ready = false;
         }
@@ -207,7 +277,6 @@
           const msg = e.data;
           if (typeof msg !== 'string') return;
 
-          // Parse info lines for score
           if (msg.startsWith('info') && msg.includes('score')) {
             const scoreMatch = msg.match(/score (cp (-?\d+)|mate (-?\d+))/);
             if (scoreMatch) {
@@ -219,7 +288,6 @@
             }
           }
 
-          // Bestmove line resolves analyze()
           if (msg.startsWith('bestmove')) {
             const parts = msg.split(' ');
             this._bestmove = parts[1];
@@ -232,7 +300,6 @@
             return;
           }
 
-          // Initialization messages
           if (msg.includes('uciok') && this._pendingType === 'uciok') {
             const resolve = this._pendingResolve;
             this._pendingResolve = null;
@@ -261,26 +328,18 @@
           await this._waitFor('uciok');
           this.worker.postMessage('isready');
           await this._waitFor('readyok');
-          // Set MultiPV to 1 for best move only
           this.worker.postMessage('setoption name MultiPV value 1');
           this._ready = true;
         }
 
-        /**
-         * Analyze a position (fen) and return bestmove and score.
-         * @param {string} fen
-         * @param {number} depth
-         * @returns {Promise<{bestmove: string, score: object|null}>}
-         */
-        async analyze(fen, depth = 15) {
+        async analyze(fen, depth = 12) {
           if (!this._ready) throw new Error('Engine not initialized');
-          // Reset score before new search
           this._score = null;
           this._bestmove = null;
           this.worker.postMessage(`position fen ${fen}`);
           this.worker.postMessage(`go depth ${depth}`);
           const result = await this._waitFor('bestmove');
-          return result; // { bestmove, score }
+          return result;
         }
 
         terminate() {
@@ -293,10 +352,9 @@
         if (!score) return 0;
         if (score.cp !== undefined) return score.cp;
         if (score.mate !== undefined) {
-          // mate in y: positive = side to move mates, negative = opponent mates
           const mateIn = score.mate;
-          if (mateIn > 0) return 10000 - mateIn * 100;   // winning mate
-          else return -10000 - mateIn * 100;              // losing mate
+          if (mateIn > 0) return 10000 - mateIn * 100;
+          else return -10000 - mateIn * 100;
         }
         return 0;
       }
@@ -313,13 +371,11 @@
       // ---------- Global state ----------
       let board = null;
       let engine = null;
-      let currentGameMoves = [];        // { fenBefore, fenAfter, move, color }
-      let analysisResults = [];        // { cpLoss, category, fenAfter, move }
+      let currentGameMoves = [];
+      let analysisResults = [];
       let currentMoveIndex = -1;
 
-      // ---------- UI ----------
       function highlightMoveSquares(from, to) {
-        // Remove previous highlights
         $('.square-55d63').removeClass('highlight-square');
         if (from) $(`.square-${from}`).addClass('highlight-square');
         if (to) $(`.square-${to}`).addClass('highlight-square');
@@ -328,12 +384,9 @@
       function updateBoardToMove(index) {
         if (!board || index < 0 || index >= analysisResults.length) return;
         const result = analysisResults[index];
-        // Set position to fenAfter of that move
         board.position(result.fenAfter, false);
-        // Highlight the move squares
         const move = currentGameMoves[index].move;
         highlightMoveSquares(move.from, move.to);
-        // Update active row in table
         $('#moveTableBody tr').removeClass('active');
         $(`#moveRow-${index}`).addClass('active');
         currentMoveIndex = index;
@@ -350,7 +403,6 @@
           const blackMove = categorized[i + 1];
           rowHtml += `<tr>`;
           rowHtml += `<td>${moveNum}</td>`;
-          // White move
           if (whiteMove) {
             rowHtml += `<td class="move-row ${whiteMove.category}" id="moveRow-${i}" data-index="${i}">
               ${whiteMove.move.san}
@@ -360,7 +412,6 @@
           } else {
             rowHtml += `<td></td>`;
           }
-          // Black move
           if (blackMove) {
             rowHtml += `<td class="move-row ${blackMove.category}" id="moveRow-${i+1}" data-index="${i+1}">
               ${blackMove.move.san}
@@ -374,7 +425,6 @@
         }
         tbody.html(rowHtml);
 
-        // Click handler
         $('.move-row').on('click', function() {
           const idx = parseInt($(this).data('index'), 10);
           updateBoardToMove(idx);
@@ -386,11 +436,9 @@
         if (totalMoves === 0) return;
         const totalCpLoss = analysisResults.reduce((sum, r) => sum + r.cpLoss, 0);
         const avgCpLoss = totalCpLoss / totalMoves;
-        // Accuracy formula: 100 - avgCpLoss, clamped to [0,100]
         const accuracy = Math.max(0, Math.min(100, 100 - avgCpLoss)).toFixed(1);
         $('#accuracyDisplay').text(`${accuracy}%`);
         $('#avgCpLoss').text(avgCpLoss.toFixed(2));
-        // Count categories
         const counts = { best:0, excellent:0, good:0, inaccuracy:0, mistake:0, blunder:0 };
         analysisResults.forEach(r => counts[r.category]++);
         $('#moveStats').html(`
@@ -399,26 +447,21 @@
         `);
       }
 
-      // ---------- Analysis ----------
-      async function runAnalysis(pgn) {
+      async function runAnalysis(pgnText) {
+        $('#errorDisplay').hide();
+        
         // Parse PGN
-        const chess = new Chess();
-        try {
-          chess.load_pgn(pgn, { sloppy: true });
-        } catch (e) {
-          alert('Invalid PGN. Please check and try again.');
-          return;
-        }
-
-        // Extract move history with FENs
-        const tempChess = new Chess();
-        const history = tempChess.history({ verbose: true });
+        const chess = parsePGN(pgnText);
+        const history = chess.history({ verbose: true });
+        
         if (history.length === 0) {
-          alert('No moves found in PGN.');
+          $('#errorDisplay').show().text('❌ Could not parse any moves. Please check your PGN format. Make sure it contains valid chess moves in standard algebraic notation.');
           return;
         }
+        
+        console.log('Successfully parsed', history.length, 'moves');
+        
         currentGameMoves = [];
-        // Replay moves and record fen before/after
         const replay = new Chess();
         for (let move of history) {
           const fenBefore = replay.fen();
@@ -432,13 +475,13 @@
           });
         }
 
-        // Initialize engine if not already
         if (!engine) {
           try {
             engine = new Engine('https://raw.githubusercontent.com/nmrugg/stockfish.js/master/stockfish.js');
             await engine.init();
+            console.log('Engine initialized');
           } catch (e) {
-            alert('Failed to load Stockfish engine. Please check your connection.');
+            $('#errorDisplay').show().text('Failed to load Stockfish engine. Please check your internet connection.');
             console.error(e);
             return;
           }
@@ -447,35 +490,30 @@
         const totalMoves = currentGameMoves.length;
         analysisResults = [];
         $('#progress').text(`Analyzing... 0/${totalMoves}`);
-        // Analyze each move
+        
         for (let i = 0; i < totalMoves; i++) {
           const step = currentGameMoves[i];
           const isWhite = step.color === 'w';
 
-          // 1. Best move and score from position before the move
-          const beforeAnalysis = await engine.analyze(step.fenBefore, 15);
+          const beforeAnalysis = await engine.analyze(step.fenBefore, 12);
           const bestScore = beforeAnalysis.score;
           const bestMoveUCI = beforeAnalysis.bestmove;
 
-          // 2. Score after actual move
-          const afterAnalysis = await engine.analyze(step.fenAfter, 15);
+          const afterAnalysis = await engine.analyze(step.fenAfter, 12);
           const actualScore = afterAnalysis.score;
 
           const bestCp = scoreToCentipawns(bestScore);
           const actualCp = scoreToCentipawns(actualScore);
 
-          // Calculate centipawn loss
           let cpLoss;
           if (isWhite) {
-            // White to move: better eval is higher, so loss = bestCp - actualCp
             cpLoss = bestCp - actualCp;
           } else {
-            // Black to move: better eval is lower (more negative), so loss = actualCp - bestCp
             cpLoss = actualCp - bestCp;
           }
-          // In rare cases, loss could be negative due to horizon; clamp to 0
           cpLoss = Math.max(0, cpLoss);
           const category = classifyMove(cpLoss);
+          
           analysisResults.push({
             cpLoss,
             category,
@@ -489,11 +527,9 @@
           $('#progress').text(`Analyzing... ${i+1}/${totalMoves}`);
         }
 
-        // Show analysis section
         $('#analysisSection').show();
         $('#progress').text('');
 
-        // Initialize chessboard if not done yet
         if (!board) {
           board = Chessboard('board', {
             position: 'start',
@@ -503,7 +539,6 @@
           });
         }
 
-        // Set board to initial position (before first move)
         if (analysisResults.length > 0) {
           board.position(currentGameMoves[0].fenBefore, false);
           highlightMoveSquares(null, null);
@@ -513,13 +548,11 @@
         renderMoveList();
         updateStats();
 
-        // Auto-jump to move 1 (or start)
         if (analysisResults.length > 0) {
           updateBoardToMove(0);
         }
       }
 
-      // ---------- Event handlers ----------
       $('#analyzeBtn').on('click', async function() {
         const pgnText = $('#pgnInput').val().trim();
         if (!pgnText) {
@@ -527,17 +560,17 @@
           return;
         }
         $(this).prop('disabled', true);
+        $('#errorDisplay').hide();
         try {
           await runAnalysis(pgnText);
         } catch (e) {
-          alert('An error occurred during analysis.');
+          $('#errorDisplay').show().text('An error occurred: ' + e.message);
           console.error(e);
         } finally {
           $(this).prop('disabled', false);
         }
       });
 
-      // File upload reads into textarea
       $('#pgnFile').on('change', function(e) {
         const file = e.target.files[0];
         if (!file) return;
@@ -548,7 +581,6 @@
         reader.readAsText(file);
       });
 
-      // Clean up engine on page unload
       window.addEventListener('beforeunload', () => {
         if (engine) engine.terminate();
       });
