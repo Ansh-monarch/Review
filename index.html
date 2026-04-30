@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+  <title>Chess Game Review</title>
+  <!-- Chessboard.js CSS -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css">
+  <style>
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 20px;
+      background: #f5f5f5;
+      color: #333;
+    }
+    h1 {
+      text-align: center;
+      color: #2c3e50;
+      margin-bottom: 10px;
+    }
+    .upload-section {
+      background: white;
+      padding: 20px;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+      margin-bottom: 20px;
+    }
+    textarea {
+      width: 100%;
+      height: 130px;
+      font-family: monospace;
+      margin: 8px 0;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      padding: 10px;
+      resize: vertical;
+    }
+    input[type="file"] {
+      margin: 10px 0;
+    }
+    button {
+      background: #2c3e50;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover {
+      background: #1e2b38;
+    }
+    button:disabled {
+      background: #aaa;
+      cursor: not-allowed;
+    }
+    .analysis-section {
+      background: white;
+      padding: 20px;
+      border-radius: 12px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+    }
+    .board-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 30px;
+      align-items: flex-start;
+    }
+    #board {
+      width: 400px;
+      max-width: 100%;
+    }
+    .stats {
+      flex: 1;
+      min-width: 220px;
+    }
+    .stat-box {
+      background: #f8f9fa;
+      border-radius: 10px;
+      padding: 15px;
+      margin-bottom: 15px;
+    }
+    .accuracy-number {
+      font-size: 2.5rem;
+      font-weight: bold;
+      color: #2c3e50;
+    }
+    .move-list {
+      margin-top: 25px;
+      max-height: 450px;
+      overflow-y: auto;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th {
+      background: #f0f0f0;
+      padding: 8px;
+      font-size: 0.9rem;
+      text-align: left;
+      position: sticky;
+      top: 0;
+    }
+    td {
+      padding: 6px 8px;
+      border-bottom: 1px solid #eee;
+      font-size: 0.9rem;
+    }
+    .move-row {
+      cursor: pointer;
+    }
+    .move-row:hover {
+      background: #f0f8ff;
+    }
+    .move-row.active {
+      background: #d4e7ff;
+      font-weight: bold;
+    }
+    .best { color: #27ae60; }
+    .excellent { color: #2ecc71; }
+    .good { color: #3498db; }
+    .inaccuracy { color: #f39c12; }
+    .mistake { color: #e67e22; }
+    .blunder { color: #e74c3c; font-weight: bold; }
+    .cp-loss {
+      font-size: 0.8rem;
+      color: #666;
+      margin-left: 6px;
+    }
+    .loading {
+      display: inline-block;
+      margin-left: 10px;
+      color: #888;
+    }
+    .highlight-square {
+      box-shadow: inset 0 0 0 3px rgba(255, 215, 0, 0.8);
+    }
+    @media (max-width: 600px) {
+      .board-container {
+        flex-direction: column;
+        align-items: center;
+      }
+      #board {
+        width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <h1>♟️ Chess Game Review</h1> 
+  <p style="text-align:center; color:#555;">Upload a PGN or paste it below, then analyze your game with Stockfish.</p>
+
+  <div class="upload-section">
+    <input type="file" id="pgnFile" accept=".pgn,.txt">
+    <textarea id="pgnInput" placeholder="Paste your PGN here..."></textarea>
+    <button id="analyzeBtn">🔍 Analyze Game</button>
+    <span id="progress" class="loading"></span>
+  </div>
+
+  <div class="analysis-section" id="analysisSection" style="display: none;">
+    <div class="board-container">
+      <div id="board"></div>
+      <div class="stats">
+        <div class="stat-box">
+          <div style="font-size:1rem;">Accuracy</div>
+          <div class="accuracy-number" id="accuracyDisplay">--</div>
+          <div style="font-size:0.9rem; color:#666;">Avg. centipawn loss: <span id="avgCpLoss">--</span></div>
+        </div>
+        <div id="moveStats" style="font-size:0.9rem;"></div>
+      </div>
+    </div>
+    <h3>Move List (click to jump)</h3>
+    <div class="move-list" id="moveListContainer">
+      <table id="moveTable">
+        <thead><tr><th>#</th><th>White</th><th>Black</th></tr></thead>
+        <tbody id="moveTableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Dependencies -->
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js"></script>
+
+  <script>
+    (function() {
+      // ---------- Engine wrapper ----------
+      class Engine {
+        constructor(workerUrl) {
+          this.worker = new Worker(workerUrl);
+          this.worker.onmessage = this._handleMessage.bind(this);
+          this._pendingResolve = null;
+          this._pendingType = null;      // 'bestmove' or 'readyok' or 'uciok'
+          this._score = null;            // { cp: number } or { mate: number }
+          this._bestmove = null;
+          this._ready = false;
+        }
+
+        _handleMessage(e) {
+          const msg = e.data;
+          if (typeof msg !== 'string') return;
+
+          // Parse info lines for score
+          if (msg.startsWith('info') && msg.includes('score')) {
+            const scoreMatch = msg.match(/score (cp (-?\d+)|mate (-?\d+))/);
+            if (scoreMatch) {
+              if (scoreMatch[2] !== undefined) {
+                this._score = { cp: parseInt(scoreMatch[2], 10) };
+              } else if (scoreMatch[3] !== undefined) {
+                this._score = { mate: parseInt(scoreMatch[3], 10) };
+              }
+            }
+          }
+
+          // Bestmove line resolves analyze()
+          if (msg.startsWith('bestmove')) {
+            const parts = msg.split(' ');
+            this._bestmove = parts[1];
+            if (this._pendingType === 'bestmove' && this._pendingResolve) {
+              const resolve = this._pendingResolve;
+              this._pendingResolve = null;
+              this._pendingType = null;
+              resolve({ bestmove: this._bestmove, score: this._score });
+            }
+            return;
+          }
+
+          // Initialization messages
+          if (msg.includes('uciok') && this._pendingType === 'uciok') {
+            const resolve = this._pendingResolve;
+            this._pendingResolve = null;
+            this._pendingType = null;
+            resolve();
+            return;
+          }
+          if (msg.includes('readyok') && this._pendingType === 'readyok') {
+            const resolve = this._pendingResolve;
+            this._pendingResolve = null;
+            this._pendingType = null;
+            resolve();
+            return;
+          }
+        }
+
+        async _waitFor(type) {
+          return new Promise((resolve) => {
+            this._pendingResolve = resolve;
+            this._pendingType = type;
+          });
+        }
+
+        async init() {
+          this.worker.postMessage('uci');
+          await this._waitFor('uciok');
+          this.worker.postMessage('isready');
+          await this._waitFor('readyok');
+          // Set MultiPV to 1 for best move only
+          this.worker.postMessage('setoption name MultiPV value 1');
+          this._ready = true;
+        }
+
+        /**
+         * Analyze a position (fen) and return bestmove and score.
+         * @param {string} fen
+         * @param {number} depth
+         * @returns {Promise<{bestmove: string, score: object|null}>}
+         */
+        async analyze(fen, depth = 15) {
+          if (!this._ready) throw new Error('Engine not initialized');
+          // Reset score before new search
+          this._score = null;
+          this._bestmove = null;
+          this.worker.postMessage(`position fen ${fen}`);
+          this.worker.postMessage(`go depth ${depth}`);
+          const result = await this._waitFor('bestmove');
+          return result; // { bestmove, score }
+        }
+
+        terminate() {
+          this.worker.terminate();
+        }
+      }
+
+      // ---------- Helpers ----------
+      function scoreToCentipawns(score) {
+        if (!score) return 0;
+        if (score.cp !== undefined) return score.cp;
+        if (score.mate !== undefined) {
+          // mate in y: positive = side to move mates, negative = opponent mates
+          const mateIn = score.mate;
+          if (mateIn > 0) return 10000 - mateIn * 100;   // winning mate
+          else return -10000 - mateIn * 100;              // losing mate
+        }
+        return 0;
+      }
+
+      function classifyMove(cpLoss) {
+        if (cpLoss <= 5) return 'best';
+        if (cpLoss <= 10) return 'excellent';
+        if (cpLoss <= 25) return 'good';
+        if (cpLoss <= 50) return 'inaccuracy';
+        if (cpLoss <= 100) return 'mistake';
+        return 'blunder';
+      }
+
+      // ---------- Global state ----------
+      let board = null;
+      let engine = null;
+      let currentGameMoves = [];        // { fenBefore, fenAfter, move, color }
+      let analysisResults = [];        // { cpLoss, category, fenAfter, move }
+      let currentMoveIndex = -1;
+
+      // ---------- UI ----------
+      function highlightMoveSquares(from, to) {
+        // Remove previous highlights
+        $('.square-55d63').removeClass('highlight-square');
+        if (from) $(`.square-${from}`).addClass('highlight-square');
+        if (to) $(`.square-${to}`).addClass('highlight-square');
+      }
+
+      function updateBoardToMove(index) {
+        if (!board || index < 0 || index >= analysisResults.length) return;
+        const result = analysisResults[index];
+        // Set position to fenAfter of that move
+        board.position(result.fenAfter, false);
+        // Highlight the move squares
+        const move = currentGameMoves[index].move;
+        highlightMoveSquares(move.from, move.to);
+        // Update active row in table
+        $('#moveTableBody tr').removeClass('active');
+        $(`#moveRow-${index}`).addClass('active');
+        currentMoveIndex = index;
+      }
+
+      function renderMoveList() {
+        const tbody = $('#moveTableBody');
+        tbody.empty();
+        const categorized = analysisResults;
+        let rowHtml = '';
+        for (let i = 0; i < categorized.length; i += 2) {
+          const moveNum = Math.floor(i / 2) + 1;
+          const whiteMove = categorized[i];
+          const blackMove = categorized[i + 1];
+          rowHtml += `<tr>`;
+          rowHtml += `<td>${moveNum}</td>`;
+          // White move
+          if (whiteMove) {
+            rowHtml += `<td class="move-row ${whiteMove.category}" id="moveRow-${i}" data-index="${i}">
+              ${whiteMove.move.san}
+              <span class="cp-loss">${whiteMove.cpLoss.toFixed(0)}</span>
+              <span class="${whiteMove.category}">${whiteMove.category.toUpperCase()}</span>
+            </td>`;
+          } else {
+            rowHtml += `<td></td>`;
+          }
+          // Black move
+          if (blackMove) {
+            rowHtml += `<td class="move-row ${blackMove.category}" id="moveRow-${i+1}" data-index="${i+1}">
+              ${blackMove.move.san}
+              <span class="cp-loss">${blackMove.cpLoss.toFixed(0)}</span>
+              <span class="${blackMove.category}">${blackMove.category.toUpperCase()}</span>
+            </td>`;
+          } else {
+            rowHtml += `<td></td>`;
+          }
+          rowHtml += `</tr>`;
+        }
+        tbody.html(rowHtml);
+
+        // Click handler
+        $('.move-row').on('click', function() {
+          const idx = parseInt($(this).data('index'), 10);
+          updateBoardToMove(idx);
+        });
+      }
+
+      function updateStats() {
+        const totalMoves = analysisResults.length;
+        if (totalMoves === 0) return;
+        const totalCpLoss = analysisResults.reduce((sum, r) => sum + r.cpLoss, 0);
+        const avgCpLoss = totalCpLoss / totalMoves;
+        // Accuracy formula: 100 - avgCpLoss, clamped to [0,100]
+        const accuracy = Math.max(0, Math.min(100, 100 - avgCpLoss)).toFixed(1);
+        $('#accuracyDisplay').text(`${accuracy}%`);
+        $('#avgCpLoss').text(avgCpLoss.toFixed(2));
+        // Count categories
+        const counts = { best:0, excellent:0, good:0, inaccuracy:0, mistake:0, blunder:0 };
+        analysisResults.forEach(r => counts[r.category]++);
+        $('#moveStats').html(`
+          <div>✅ Best: ${counts.best} | ⭐ Excellent: ${counts.excellent} | 👍 Good: ${counts.good}</div>
+          <div>⚠️ Inaccuracy: ${counts.inaccuracy} | ❗ Mistake: ${counts.mistake} | 💥 Blunder: ${counts.blunder}</div>
+        `);
+      }
+
+      // ---------- Analysis ----------
+      async function runAnalysis(pgn) {
+        // Parse PGN
+        const chess = new Chess();
+        try {
+          chess.load_pgn(pgn, { sloppy: true });
+        } catch (e) {
+          alert('Invalid PGN. Please check and try again.');
+          return;
+        }
+
+        // Extract move history with FENs
+        const tempChess = new Chess();
+        const history = tempChess.history({ verbose: true });
+        if (history.length === 0) {
+          alert('No moves found in PGN.');
+          return;
+        }
+        currentGameMoves = [];
+        // Replay moves and record fen before/after
+        const replay = new Chess();
+        for (let move of history) {
+          const fenBefore = replay.fen();
+          replay.move(move.san);
+          const fenAfter = replay.fen();
+          currentGameMoves.push({
+            fenBefore,
+            fenAfter,
+            move,
+            color: move.color
+          });
+        }
+
+        // Initialize engine if not already
+        if (!engine) {
+          try {
+            engine = new Engine('https://raw.githubusercontent.com/nmrugg/stockfish.js/master/stockfish.js');
+            await engine.init();
+          } catch (e) {
+            alert('Failed to load Stockfish engine. Please check your connection.');
+            console.error(e);
+            return;
+          }
+        }
+
+        const totalMoves = currentGameMoves.length;
+        analysisResults = [];
+        $('#progress').text(`Analyzing... 0/${totalMoves}`);
+        // Analyze each move
+        for (let i = 0; i < totalMoves; i++) {
+          const step = currentGameMoves[i];
+          const isWhite = step.color === 'w';
+
+          // 1. Best move and score from position before the move
+          const beforeAnalysis = await engine.analyze(step.fenBefore, 15);
+          const bestScore = beforeAnalysis.score;
+          const bestMoveUCI = beforeAnalysis.bestmove;
+
+          // 2. Score after actual move
+          const afterAnalysis = await engine.analyze(step.fenAfter, 15);
+          const actualScore = afterAnalysis.score;
+
+          const bestCp = scoreToCentipawns(bestScore);
+          const actualCp = scoreToCentipawns(actualScore);
+
+          // Calculate centipawn loss
+          let cpLoss;
+          if (isWhite) {
+            // White to move: better eval is higher, so loss = bestCp - actualCp
+            cpLoss = bestCp - actualCp;
+          } else {
+            // Black to move: better eval is lower (more negative), so loss = actualCp - bestCp
+            cpLoss = actualCp - bestCp;
+          }
+          // In rare cases, loss could be negative due to horizon; clamp to 0
+          cpLoss = Math.max(0, cpLoss);
+          const category = classifyMove(cpLoss);
+          analysisResults.push({
+            cpLoss,
+            category,
+            fenAfter: step.fenAfter,
+            move: step.move,
+            bestMove: bestMoveUCI,
+            bestScoreCp: bestCp,
+            actualScoreCp: actualCp
+          });
+
+          $('#progress').text(`Analyzing... ${i+1}/${totalMoves}`);
+        }
+
+        // Show analysis section
+        $('#analysisSection').show();
+        $('#progress').text('');
+
+        // Initialize chessboard if not done yet
+        if (!board) {
+          board = Chessboard('board', {
+            position: 'start',
+            draggable: false,
+            showNotation: true,
+            pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png'
+          });
+        }
+
+        // Set board to initial position (before first move)
+        if (analysisResults.length > 0) {
+          board.position(currentGameMoves[0].fenBefore, false);
+          highlightMoveSquares(null, null);
+          currentMoveIndex = -1;
+        }
+
+        renderMoveList();
+        updateStats();
+
+        // Auto-jump to move 1 (or start)
+        if (analysisResults.length > 0) {
+          updateBoardToMove(0);
+        }
+      }
+
+      // ---------- Event handlers ----------
+      $('#analyzeBtn').on('click', async function() {
+        const pgnText = $('#pgnInput').val().trim();
+        if (!pgnText) {
+          alert('Please paste a PGN or upload a file.');
+          return;
+        }
+        $(this).prop('disabled', true);
+        try {
+          await runAnalysis(pgnText);
+        } catch (e) {
+          alert('An error occurred during analysis.');
+          console.error(e);
+        } finally {
+          $(this).prop('disabled', false);
+        }
+      });
+
+      // File upload reads into textarea
+      $('#pgnFile').on('change', function(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function(ev) {
+          $('#pgnInput').val(ev.target.result);
+        };
+        reader.readAsText(file);
+      });
+
+      // Clean up engine on page unload
+      window.addEventListener('beforeunload', () => {
+        if (engine) engine.terminate();
+      });
+    })();
+  </script>
+</body>
+</html>
