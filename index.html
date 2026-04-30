@@ -35,6 +35,7 @@
       border-radius: 8px;
       padding: 10px;
       resize: vertical;
+      box-sizing: border-box;
     }
     input[type="file"] {
       margin: 10px 0;
@@ -136,6 +137,7 @@
       display: inline-block;
       margin-left: 10px;
       color: #888;
+      font-weight: bold;
     }
     .highlight-square {
       box-shadow: inset 0 0 0 3px rgba(255, 215, 0, 0.8);
@@ -192,80 +194,113 @@
   </div>
 
   <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
-  <!-- Use chess.js from jsdelivr which is more reliable -->
-  <script src="https://cdn.jsdelivr.net/npm/chess.js@0.10.3/dist/chess.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.12.0/chess.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js"></script>
 
   <script>
     (function() {
       // ---------- PGN Parser ----------
-      function parsePGN(pgnText) {
-        // Normalize quotes and line endings
-        let cleaned = pgnText
-          .replace(/[\u2018\u2019\u201C\u201D]/g, '"') // Smart quotes to straight quotes
-          .replace(/[\u2013\u2014]/g, '-') // Em/en dashes
+      function cleanPGN(pgn) {
+        let cleaned = pgn
+          .replace(/[\u2018\u2019]/g, "'")
+          .replace(/[\u201C\u201D]/g, '"')
+          .replace(/[\u2013\u2014]/g, '-')
           .replace(/\r\n/g, '\n')
           .replace(/\r/g, '\n')
           .trim();
         
-        // Extract just the moves (skip headers)
-        let movesText = cleaned;
-        
-        // If there are headers, extract moves after the headers
-        if (cleaned.includes('[') && cleaned.includes(']')) {
-          const parts = cleaned.split('\n');
-          let moveLines = [];
-          let headersDone = false;
-          
-          for (let line of parts) {
-            if (!headersDone && (line.trim().startsWith('[') || line.trim() === '')) {
-              continue;
+        const lines = cleaned.split('\n');
+        let headerEnd = -1;
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].startsWith('[')) {
+            headerEnd = i;
+          } else if (lines[i].trim() !== '') {
+            if (headerEnd >= 0 && lines[headerEnd + 1]?.trim() !== '') {
+              lines.splice(headerEnd + 1, 0, '');
             }
-            headersDone = true;
-            if (line.trim()) {
-              moveLines.push(line.trim());
-            }
+            break;
           }
-          movesText = moveLines.join(' ');
         }
+        return lines.join('\n');
+      }
+
+      function extractMovesOnly(pgn) {
+        const lines = pgn.split('\n');
+        let movesPart = [];
+        let inHeaders = true;
         
-        // Clean up the moves text
-        movesText = movesText
-          .replace(/\{[\s\S]*?\}/g, '')  // Remove comments
-          .replace(/\([\s\S]*?\)/g, '')  // Remove variations
-          .replace(/\$\d+/g, '')         // Remove NAGs
-          .replace(/\d+\.\.\./g, '')     // Remove black move indicators
-          .replace(/\s+/g, ' ')          // Normalize spaces
-          .trim();
-        
-        console.log('Cleaned moves:', movesText);
-        
-        // Parse move by move
-        const chess = new Chess();
-        const tokens = movesText.split(/\s+/);
-        
-        for (let token of tokens) {
-          // Skip move numbers and result
-          if (/^\d+\.$/.test(token) || /^(1-0|0-1|1\/2-1\/2|\*)$/.test(token)) {
+        for (let line of lines) {
+          if (inHeaders && line.trim().startsWith('[')) continue;
+          if (inHeaders && line.trim() === '') {
+            inHeaders = false;
             continue;
           }
-          
-          try {
-            chess.move(token, { sloppy: true });
-          } catch (e) {
-            console.warn('Failed to parse move:', token, e.message);
-            // Continue trying other moves
-          }
+          if (!inHeaders) movesPart.push(line.trim());
         }
         
-        return chess;
+        let moves = movesPart.join(' ')
+          .replace(/\{[\s\S]*?\}/g, '')
+          .replace(/\([\s\S]*?\)/g, '')
+          .replace(/\$\d+/g, '')
+          .replace(/1-0|0-1|1\/2-1\/2|\*/g, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+        return moves;
+      }
+
+      function parsePGNFlexible(pgn) {
+        const chess = new Chess();
+        
+        try {
+          const cleaned = cleanPGN(pgn);
+          chess.load_pgn(cleaned, { sloppy: true, newline_char: '\n' });
+          if (chess.history().length > 0) return chess;
+        } catch (e) {}
+
+        try {
+          const chess2 = new Chess();
+          const movesOnly = extractMovesOnly(pgn);
+          chess2.load_pgn(movesOnly, { sloppy: true });
+          if (chess2.history().length > 0) return chess2;
+        } catch (e) {}
+
+        try {
+          const chess3 = new Chess();
+          const movesOnly = extractMovesOnly(pgn);
+          const moves = movesOnly.match(/\d+\.\s*\S+(\s+\S+)?/g);
+          if (moves) {
+            for (let moveText of moves) {
+              const parts = moveText.replace(/^\d+\.\s*/, '').split(/\s+/);
+              for (let part of parts) {
+                if (part && !part.match(/^[0-9.]+$/)) {
+                  try { chess3.move(part, { sloppy: true }); } catch (e) {}
+                }
+              }
+            }
+            if (chess3.history().length > 0) return chess3;
+          }
+        } catch (e) {}
+
+        try {
+          const chess4 = new Chess();
+          const movesOnly = extractMovesOnly(pgn);
+          const movePattern = /([KQRBN]?[a-h]?[1-8]?x?[a-h][1-8](?:=[QRBN])?[\+#]?|O-O(?:-O)?)/g;
+          const moves = movesOnly.match(movePattern);
+          if (moves) {
+            for (let move of moves) {
+              try { chess4.move(move, { sloppy: true }); } catch (e) {}
+            }
+            if (chess4.history().length > 0) return chess4;
+          }
+        } catch (e) {}
+
+        return null;
       }
 
       // ---------- Engine wrapper ----------
       class Engine {
-        constructor(workerUrl) {
-          this.worker = new Worker(workerUrl);
-          this.worker.onmessage = this._handleMessage.bind(this);
+        constructor() {
+          this.worker = null;
           this._pendingResolve = null;
           this._pendingType = null;
           this._score = null;
@@ -323,7 +358,16 @@
           });
         }
 
-        async init() {
+        async init(workerUrl) {
+          // Fix for cross-origin workers: Create a Blob URL
+          const response = await fetch(workerUrl);
+          const script = await response.text();
+          const blob = new Blob([script], { type: 'application/javascript' });
+          const objectUrl = URL.createObjectURL(blob);
+
+          this.worker = new Worker(objectUrl);
+          this.worker.onmessage = this._handleMessage.bind(this);
+
           this.worker.postMessage('uci');
           await this._waitFor('uciok');
           this.worker.postMessage('isready');
@@ -343,7 +387,9 @@
         }
 
         terminate() {
-          this.worker.terminate();
+          if (this.worker) {
+            this.worker.terminate();
+          }
         }
       }
 
@@ -447,19 +493,17 @@
         `);
       }
 
-      async function runAnalysis(pgnText) {
+      async function runAnalysis(pgn) {
         $('#errorDisplay').hide();
         
-        // Parse PGN
-        const chess = parsePGN(pgnText);
-        const history = chess.history({ verbose: true });
+        const chess = parsePGNFlexible(pgn);
         
-        if (history.length === 0) {
-          $('#errorDisplay').show().text('❌ Could not parse any moves. Please check your PGN format. Make sure it contains valid chess moves in standard algebraic notation.');
+        if (!chess || chess.history().length === 0) {
+          $('#errorDisplay').show().text('❌ Could not parse PGN. Please check the format. Your PGN should contain moves in standard algebraic notation (e.g., "1. e4 e5 2. Nf3").');
           return;
         }
-        
-        console.log('Successfully parsed', history.length, 'moves');
+
+        const history = chess.history({ verbose: true });
         
         currentGameMoves = [];
         const replay = new Chess();
@@ -477,11 +521,12 @@
 
         if (!engine) {
           try {
-            engine = new Engine('https://raw.githubusercontent.com/nmrugg/stockfish.js/master/stockfish.js');
-            await engine.init();
-            console.log('Engine initialized');
+            engine = new Engine();
+            $('#progress').text('Downloading engine...');
+            // Load from CDN to ensure stable fetching
+            await engine.init('https://raw.githubusercontent.com/nmrugg/stockfish.js/master/stockfish.js');
           } catch (e) {
-            $('#errorDisplay').show().text('Failed to load Stockfish engine. Please check your internet connection.');
+            $('#errorDisplay').show().text('Failed to load Stockfish engine. Check your connection or CORS settings.');
             console.error(e);
             return;
           }
@@ -489,29 +534,33 @@
 
         const totalMoves = currentGameMoves.length;
         analysisResults = [];
-        $('#progress').text(`Analyzing... 0/${totalMoves}`);
+        
+        // Depth reduced to 12. Browser limits make 15 drastically too slow for loops.
+        const searchDepth = 12; 
         
         for (let i = 0; i < totalMoves; i++) {
+          $('#progress').text(`Analyzing move ${i+1} of ${totalMoves}...`);
+          
           const step = currentGameMoves[i];
-          const isWhite = step.color === 'w';
 
-          const beforeAnalysis = await engine.analyze(step.fenBefore, 12);
+          const beforeAnalysis = await engine.analyze(step.fenBefore, searchDepth);
           const bestScore = beforeAnalysis.score;
           const bestMoveUCI = beforeAnalysis.bestmove;
 
-          const afterAnalysis = await engine.analyze(step.fenAfter, 12);
+          const afterAnalysis = await engine.analyze(step.fenAfter, searchDepth);
           const actualScore = afterAnalysis.score;
 
           const bestCp = scoreToCentipawns(bestScore);
           const actualCp = scoreToCentipawns(actualScore);
 
-          let cpLoss;
-          if (isWhite) {
-            cpLoss = bestCp - actualCp;
-          } else {
-            cpLoss = actualCp - bestCp;
-          }
-          cpLoss = Math.max(0, cpLoss);
+          // Stockfish scores from the perspective of the player to move.
+          // bestCp = Score for the player currently moving.
+          // actualCp = Score for the opponent AFTER the move is played.
+          // The new evaluation from the original player's perspective is -actualCp.
+          // CP Loss = Expected Eval - Actual Eval = bestCp - (-actualCp) = bestCp + actualCp
+          let cpLoss = bestCp + actualCp;
+          cpLoss = Math.max(0, cpLoss); 
+          
           const category = classifyMove(cpLoss);
           
           analysisResults.push({
@@ -523,8 +572,6 @@
             bestScoreCp: bestCp,
             actualScoreCp: actualCp
           });
-
-          $('#progress').text(`Analyzing... ${i+1}/${totalMoves}`);
         }
 
         $('#analysisSection').show();
@@ -576,15 +623,4 @@
         if (!file) return;
         const reader = new FileReader();
         reader.onload = function(ev) {
-          $('#pgnInput').val(ev.target.result);
-        };
-        reader.readAsText(file);
-      });
-
-      window.addEventListener('beforeunload', () => {
-        if (engine) engine.terminate();
-      });
-    })();
-  </script>
-</body>
-</html>
+          $('#pgnInput'
